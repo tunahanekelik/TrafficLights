@@ -1,0 +1,296 @@
+***** DeedsMcE Project File *****
+* If you read this message, you need to install the last version of Deeds! *
+FVR 3
+SYS 2
+CPU 1
+FCK 2
+ROM 4
+RAM 4
+PIA 0
+PIB 1
+PIC 2
+PID 3
+PIE 4
+PIF 5
+PIG 6
+PIH 7
+POA 0
+POB 1
+POC 2
+POD 3
+POE 4
+POF 5
+POG 6
+POH 7
+INT 007 SRC 002 PRT 000 TMD 001 TIN 019 EIN 003 
+INT 006 SRC 002 PRT 000 TMD 001 TIN 019 EIN 003 
+INT 005 SRC 002 PRT 000 TMD 001 TIN 019 EIN 003 
+INT 004 SRC 002 PRT 000 TMD 001 TIN 019 EIN 003 
+INT 003 SRC 002 PRT 000 TMD 001 TIN 019 EIN 003 
+INT 002 SRC 002 PRT 000 TMD 001 TIN 019 EIN 003 
+INT 001 SRC 002 PRT 000 TMD 001 TIN 019 EIN 003 
+INT 000 SRC 002 PRT 000 TMD 001 TIN 019 EIN 003 
+******* Project File END ********
+; MASTER CPU - FINAL RELEASE (HARDWARE OPTIMIZED)
+; This CPU controls ONLY vehicle traffic lights.
+; Pedestrian lights are handled purely by hardware wiring.
+
+; ------------------------------------------------------------
+; Port OA (00h): South + East vehicle lights
+; Port OB (01h): West + North vehicle lights
+; Port IN (00h): Input bus from Slave CPU (buttons + night mode)
+; Port OUT (04h): Countdown 7-segment display
+; ------------------------------------------------------------
+
+ORG 0000h              ; Program starts at memory address 0000h (reset vector)
+
+RESET_SYSTEM:
+LD SP, 0FFFFh          ; Initialize stack pointer to top of memory (safe stack)
+
+; -------------------------------
+; NIGHT MODE CHECK AT STARTUP
+; -------------------------------
+IN A, (00h)            ; Read input port (buttons + night switch)
+BIT 4, A               ; Test bit 4 (night mode switch)
+JP NZ, NIGHT_MODE_ROUTINE
+                        ; If bit 4 = 1, jump to night mode
+
+START_CYCLE:
+; ==========================================================
+; PHASE 1: NORTH VEHICLE GREEN
+; Pedestrian (West) turns green automatically via hardware
+; ==========================================================
+
+PHASE_NORTH:
+LD A, 09h              ; 00001001 › South & East RED
+OUT (00h), A           ; Send to Port OA (South/East lights)
+
+LD A, 0Ch              ; 00001100 › North GREEN, West RED
+OUT (01h), A           ; Send to Port OB (North/West lights)
+
+LD H, 05h              ; Mask: which button inputs are valid during this phase
+LD B, 09h              ; Countdown duration = 9 seconds
+CALL COUNTDOWN_LOGIC   ; Start countdown with smart interruption
+
+; ---- YELLOW TRANSITION ----
+LD A, 09h              ; Keep South/East RED
+OUT (00h), A
+LD A, 14h              ; North YELLOW
+OUT (01h), A
+CALL SHORT_DELAY       ; Short fixed yellow delay
+
+CALL DECISION_ROUTER   ; Check if a button or night mode is requested
+JP PHASE_EAST          ; Otherwise go to next phase normally
+
+; ==========================================================
+; PHASE 2: EAST VEHICLE GREEN
+; Pedestrian (North) turns green automatically
+; ==========================================================
+
+PHASE_EAST:
+LD A, 21h              ; 00100001 › East GREEN, South RED
+OUT (00h), A
+
+LD A, 24h              ; 00100100 › West & North RED
+OUT (01h), A
+
+LD H, 0Ah              ; Mask for valid interruption buttons
+LD B, 09h              ; 9-second green duration
+CALL COUNTDOWN_LOGIC
+
+; ---- YELLOW ----
+LD A, 11h              ; East YELLOW
+OUT (00h), A
+LD A, 24h              ; Others remain RED
+OUT (01h), A
+CALL SHORT_DELAY
+
+CALL DECISION_ROUTER
+JP PHASE_SOUTH
+
+; ==========================================================
+; PHASE 3: SOUTH VEHICLE GREEN
+; Pedestrian (East) turns green automatically
+; ==========================================================
+
+PHASE_SOUTH:
+LD A, 0Ch              ; South GREEN, East RED
+OUT (00h), A
+
+LD A, 24h              ; West & North RED
+OUT (01h), A
+
+LD H, 05h              ; Valid interrupt mask
+LD B, 09h              ; 9 seconds
+CALL COUNTDOWN_LOGIC
+
+; ---- YELLOW ----
+LD A, 0Ah              ; South YELLOW
+OUT (00h), A
+LD A, 24h
+OUT (01h), A
+CALL SHORT_DELAY
+
+CALL DECISION_ROUTER
+JP PHASE_WEST
+
+; ==========================================================
+; PHASE 4: WEST VEHICLE GREEN
+; Pedestrian (South) turns green automatically
+; ==========================================================
+
+PHASE_WEST:
+LD A, 09h              ; South & East RED
+OUT (00h), A
+
+LD A, 21h              ; West GREEN, North RED
+OUT (01h), A
+
+LD H, 0Ah              ; Interrupt mask
+LD B, 09h              ; 9 seconds
+CALL COUNTDOWN_LOGIC
+
+; ---- YELLOW ----
+LD A, 09h
+OUT (00h), A
+LD A, 22h              ; West YELLOW
+OUT (01h), A
+CALL SHORT_DELAY
+
+CALL DECISION_ROUTER
+JP PHASE_NORTH         ; Loop back to first phase
+
+; ==========================================================
+; NIGHT MODE (FLASHING YELLOW)
+; ==========================================================
+
+NIGHT_MODE_ROUTINE:
+LD A, 00h
+OUT (04h), A           ; Turn off countdown display
+
+NIGHT_LOOP:
+LD A, 12h              ; Yellow ON for all vehicle lights
+OUT (00h), A
+OUT (01h), A
+CALL BLINK_DELAY
+
+LD A, 00h              ; All lights OFF
+OUT (00h), A
+OUT (01h), A
+CALL BLINK_DELAY
+
+IN A, (00h)            ; Re-read input
+BIT 4, A               ; Check if night mode still active
+JP NZ, NIGHT_LOOP      ; Stay in night mode
+JP RESET_SYSTEM        ; Exit night mode › restart system
+
+; ==========================================================
+; DECISION ROUTER
+; Checks night mode and button requests
+; ==========================================================
+
+DECISION_ROUTER:
+IN A, (00h)            ; Read input port
+BIT 4, A
+JP NZ, NIGHT_MODE_ROUTINE
+
+BIT 0, A               ; North button?
+JP NZ, PHASE_NORTH
+BIT 1, A               ; East button?
+JP NZ, PHASE_EAST
+BIT 2, A               ; South button?
+JP NZ, PHASE_SOUTH
+BIT 3, A               ; West button?
+JP NZ, PHASE_WEST
+
+RET                    ; No request › return to normal flow
+
+; ==========================================================
+; COUNTDOWN WITH SMART INTERRUPTION
+; ==========================================================
+
+COUNTDOWN_LOGIC:
+LOOP_SEC:
+LD A, B
+OUT (04h), A           ; Display remaining seconds
+CALL SMART_CHECK_FILTERED
+
+LD A, B
+CP 00h
+RET Z                  ; Exit when countdown reaches zero
+
+DEC B
+JP LOOP_SEC
+
+; ==========================================================
+; SMART CHECK (FILTERED BUTTON + NIGHT CHECK)
+; ==========================================================
+
+SMART_CHECK_FILTERED:
+PUSH BC                ; Save B and C registers
+LD C, 04h              ; Software delay counter
+
+L1:
+IN A, (00h)
+BIT 4, A
+JP NZ, NIGHT_MODE_ROUTINE
+
+AND H                  ; Mask unwanted button bits
+CP 00h
+JP NZ, SKIP_TIMER      ; Valid request › skip remaining time
+
+LD D, 0FFh             ; Delay loop (timing)
+L2:
+DEC D
+JP NZ, L2
+
+DEC C
+JP NZ, L1
+
+POP BC
+RET
+
+SKIP_TIMER:
+POP BC
+LD B, 00h              ; Force countdown to end immediately
+RET
+
+; ==========================================================
+; SHORT FIXED DELAY (YELLOW)
+; ==========================================================
+
+SHORT_DELAY:
+LD A, 00h
+OUT (04h), A           ; Blank display
+PUSH BC
+LD C, 05h
+
+SL1:
+LD D, 0FFh
+SL2:
+DEC D
+JP NZ, SL2
+DEC C
+JP NZ, SL1
+
+POP BC
+RET
+
+; ==========================================================
+; BLINK DELAY (NIGHT MODE)
+; ==========================================================
+
+BLINK_DELAY:
+PUSH BC
+LD C, 06h
+
+BL1:
+LD D, 0FFh
+BL2:
+DEC D
+JP NZ, BL2
+DEC C
+JP NZ, BL1
+
+POP BC
+RET
